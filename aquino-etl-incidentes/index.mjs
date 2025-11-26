@@ -37,8 +37,13 @@ export const handler = async (event) => {
     const lastLine = lines[lines.length - 1]; // Pegando a última linha
     const cols = lastLine.split(','); // Separando as colunas
 
+     const cleanFloat = (val) => {
+        if (!val) return 0;
+        return parseFloat(val.trim());
+    };
+
     // Organização das metricas:
-    // 0:User, 1:Time, 2:CPU, 3:Mem, 4:Disco, 5:Uptime, 6:Temp, 7:Indoor, 8:Situacao
+    // 0:User, 1:Time, 2:CPU, 3:Mem, 4:Disco, 5:Uptime, 6:Temp, 7:Indoor, 8:Situacao, 9:Lat, 10:Long
     const metrics = {
       cpu: parseFloat(cols[2]),
       ram: parseFloat(cols[3]),
@@ -46,7 +51,9 @@ export const handler = async (event) => {
       uptime: cols[5],
       temp: parseFloat(cols[6]), 
       timestamp: cols[1],
-      situacao: cols[8] ? cols[8].trim() : "Desconhecido"
+      situacao: cols[8] ? cols[8].trim() : "Desconhecido",
+      latitude: cleanFloat(cols[9]),
+      longitude: cleanFloat(cols[10])
     };
 
     // Gerando User Interface baseado nas métricas
@@ -89,7 +96,9 @@ export const handler = async (event) => {
         cpu: `${metrics.cpu.toFixed(1)}%`,
         ram: `${metrics.ram.toFixed(1)}%`,
         disco: `${metrics.disk.toFixed(1)}%`,
-        temp: `${metrics.temp.toFixed(1)}°C` 
+        temp: `${metrics.temp.toFixed(1)}°C`,
+        latitude: metrics.latitude,
+        longitude: metrics.longitude
       },
       ui: uiState
     };
