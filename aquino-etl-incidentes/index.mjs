@@ -1,7 +1,7 @@
 import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 
 // Inicializa o s3
-const s3 = new S3Client({ region: "sa-east-1" });
+const s3 = new S3Client({ region: "us-east-1" });
 
 const DEST_BUCKET = "vizor-client";
 
@@ -94,8 +94,8 @@ export const handler = async (event) => {
       ui: uiState
     };
 
-    // Salvando no Vizor-Client ("dashboard-data/Empresa/MaquinaID.json")
-    const destKey = `dashboard-data/${empresa}/${maquinaId}.json`;
+    // Salvando no Vizor-Client ("aquino-client/Empresa/MaquinaID.json")
+    const destKey = `aquino-client/${empresa}/${maquinaId}.json`;
 
     const putCommand = new PutObjectCommand({
       Bucket: DEST_BUCKET,
