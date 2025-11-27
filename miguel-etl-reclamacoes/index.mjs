@@ -6,7 +6,6 @@ import mysql from "mysql2/promise";
 const s3 = new S3Client({ region: process.env.AWS_REGION });
 const TRUSTED_BUCKET = process.env.TRUSTED_BUCKET;
 const CLIENT_BUCKET = process.env.CLIENT_BUCKET;
-const CLIENT_KEY = "client_lotes.json";
 
 // configuração banco de dados
 const dbConfig = {
@@ -27,13 +26,14 @@ const streamToString = (stream) =>
 
 
 // handler principal
-
 export const handler = async (event) => {
+  let conn;
+
   try {
     console.log("Iniciando ETL dos LOTES...");
 
-    // conectando ao banco de dados e buscando lotes
-    const conn = await mysql.createConnection(dbConfig);
+    // conectando ao banco
+    conn = await mysql.createConnection(dbConfig);
     const [rows] = await conn.execute(`
       SELECT mc.codigo AS codigo,
              l.id AS lote,
@@ -45,6 +45,7 @@ export const handler = async (event) => {
       LEFT JOIN modelo m ON l.fkModelo = m.id
     `);
 
+    // mapeamento
     const players = {};
     for (let i = 0; i < rows.length; i++) {
       const p = rows[i];
@@ -54,69 +55,65 @@ export const handler = async (event) => {
         modelo: p.modelo,
       };
     }
+
     console.log("Players mapeados:", Object.keys(players).length);
 
-    // listando todos os CSV do bucket trusted
+    // listando CSVs
     const csvKeys = await listarTodosCSV();
     console.log("CSV encontrados:", csvKeys.length);
 
     const lotes = {};
 
-    // leitura de cada CSV
-    for (let i = 0; i < csvKeys.length; i++) {
-      const key = csvKeys[i];
-
+    for (let idx = 0; idx < csvKeys.length; idx++) {
+      const key = csvKeys[idx];
       const conteudo = await lerCsv(key);
       if (!conteudo) continue;
 
-      const linha = conteudo.trim();
-      const cols = linha.split(",");
+      const linhas = conteudo.trim().split("\n");
 
-      const player = cols[0];
-      const cpu = parseFloat(cols[2]);
-      const ram = parseFloat(cols[3]);
-      const disco = parseFloat(cols[4]);
-      const status = cols[10];
+      for (let i = 1; i < linhas.length; i++) {
+        const cols = linhas[i].split(",");
 
-      const meta = players[player];
-      if (!meta) {
-        throw new Error(
-          `ERRO: O player ${player} existe no CSV mas não existe no banco ou não tem lote cadastrado.`
-        );
+        const player = cols[0];
+        const cpu = parseFloat(cols[2]);
+        const ram = parseFloat(cols[3]);
+        const disco = parseFloat(cols[4]);
+        const temperatura = parseFloat(cols[6]);
+        const status = cols[8];
+
+        const meta = players[player];
+        if (!meta) {
+          throw new Error(`Player ${player} não existe no banco.`);
+        }
+
+        const loteId = meta.lote;
+
+        // cria lote se necessário
+        if (!lotes[loteId]) {
+          lotes[loteId] = {
+            lote: loteId,
+            empresa: meta.empresa,
+            modelo: meta.modelo,
+            total_players: {},
+            players_com_problema: {},
+            falhas_por_componente: { cpu: 0, ram: 0, disco: 0 }
+          };
+        }
+
+        const lote = lotes[loteId];
+
+        lote.total_players[player] = true;
+
+        if (status !== "OK") {
+          lote.players_com_problema[player] = true;
+        }
+
+        if (cpu > 80) lote.falhas_por_componente.cpu++;
+        if (ram > 80) lote.falhas_por_componente.ram++;
+        if (disco > 90) lote.falhas_por_componente.disco++;
       }
-
-      const loteId = meta.lote;
-
-      // criando objeto do lote se ainda não existir
-      if (!lotes[loteId]) {
-        lotes[loteId] = {
-          lote: loteId,
-          empresa: meta.empresa,
-          modelo: meta.modelo,
-          total_players: {},
-          players_com_problema: {},
-          falhas_por_componente: { cpu: 0, ram: 0, disco: 0 },
-        };
-      }
-
-      const lote = lotes[loteId];
-
-      // registrando player no lote
-      lote.total_players[player] = true;
-
-      // verificando se é problema
-      if (status !== "OK") {
-        lote.players_com_problema[player] = true;
-      }
-
-      // falhas por componente (regras simples)
-      if (cpu > 80) lote.falhas_por_componente.cpu++;
-      if (ram > 80) lote.falhas_por_componente.ram++;
-      if (disco > 90) lote.falhas_por_componente.disco++;
     }
 
-    // criando lista final de lotes
-    // aqui calculamos score, status e falhas
     const listaLotes = [];
 
     for (const loteId in lotes) {
@@ -125,9 +122,7 @@ export const handler = async (event) => {
       const totalPlayers = Object.keys(l.total_players).length;
       const playersProblema = Object.keys(l.players_com_problema).length;
 
-      let percentual = 0;
-      if (totalPlayers > 0) percentual = (playersProblema / totalPlayers) * 100;
-
+      let percentual = totalPlayers > 0 ? (playersProblema / totalPlayers) * 100 : 0;
       const score = Math.round(100 - percentual);
 
       let status = "OK";
@@ -153,84 +148,105 @@ export const handler = async (event) => {
       });
     }
 
-    // preparando lista de scores para mediana
-    const scores = [];
-    for (let i = 0; i < listaLotes.length; i++) {
-      scores.push(listaLotes[i].score);
-    }
+    // KPI's
+    const scores = listaLotes.map(l => l.score).sort((a, b) => a - b);
 
-    for (let i = 0; i < scores.length - 1; i++) {
-      for (let j = 0; j < scores.length - i - 1; j++) {
-        if (scores[j] > scores[j + 1]) {
-          const temp = scores[j];
-          scores[j] = scores[j + 1];
-          scores[j + 1] = temp;
-        }
-      }
-    }
-
-    // mediana
     let mediana = 0;
     if (scores.length > 0) {
-      const meio = Math.floor(scores.length / 2);
-      if (scores.length % 2 === 0) {
-        mediana = (scores[meio - 1] + scores[meio]) / 2;
-      } else {
-        mediana = scores[meio];
-      }
+      const m = Math.floor(scores.length / 2);
+      mediana = scores.length % 2 === 0 ? (scores[m - 1] + scores[m]) / 2 : scores[m];
     }
 
-    // lotes problemáticos
-    let lotesProblematicos = 0;
-    for (let i = 0; i < listaLotes.length; i++) {
-      if (listaLotes[i].status !== "OK") {
-        lotesProblematicos++;
-      }
-    }
+    const lotesProblematicos = listaLotes.filter(l => l.status !== "OK").length;
+    const saudaveis = listaLotes.filter(l => l.status === "OK").length;
+    const percentualSaudaveis = listaLotes.length > 0
+      ? Math.round((saudaveis / listaLotes.length) * 100)
+      : 0;
 
-    // lotes saudáveis
-    let saudaveis = 0;
-    for (let i = 0; i < listaLotes.length; i++) {
-      if (listaLotes[i].status === "OK") {
-        saudaveis++;
-      }
-    }
-
-    let percentualSaudaveis = 0;
-    if (listaLotes.length > 0) {
-      percentualSaudaveis = Math.round((saudaveis / listaLotes.length) * 100);
-    }
-
-    // bloco da dashboard KPI's
     const dashboard = {
       lotes_problematicos: lotesProblematicos,
       lotes_saudaveis: percentualSaudaveis,
-      reclamacoes_criticas: 0, // placeholder para futuras reclamações
+      reclamacoes_criticas: 0,
       mediana_score_lotes: mediana,
     };
 
-    // salvando o arquivo final no bucket client
-    await s3.send(
-      new PutObjectCommand({
-        Bucket: CLIENT_BUCKET,
-        Key: CLIENT_KEY,
-        Body: JSON.stringify({ dashboard, lotes: listaLotes }, null, 2),
-        ContentType: "application/json",
-      })
-    );
+    // jsons
 
-    console.log("client_lotes.json gerado com sucesso!");
+    // agrupar lotes por empresa
+    const empresas = {};
+    for (const lote of listaLotes) {
+      if (!empresas[lote.empresa]) {
+        empresas[lote.empresa] = [];
+      }
+      empresas[lote.empresa].push(lote);
+    }
+
+    // gerar dashboard e arquivos por lote
+    for (const empresaNome in empresas) {
+
+      const lotesEmpresa = empresas[empresaNome];
+
+      // json kpi's da empresa
+      const scores = lotesEmpresa.map(l => l.score).sort((a, b) => a - b);
+
+      let mediana = 0;
+      if (scores.length > 0) {
+        const m = Math.floor(scores.length / 2);
+        mediana = scores.length % 2 === 0 ? (scores[m - 1] + scores[m]) / 2 : scores[m];
+      }
+
+      const lotesProblematicos = lotesEmpresa.filter(l => l.status !== "OK").length;
+      const saudaveis = lotesEmpresa.filter(l => l.status === "OK").length;
+      const percentualSaudaveis = lotesEmpresa.length > 0
+        ? Math.round((saudaveis / lotesEmpresa.length) * 100)
+        : 0;
+
+      const dashboardEmpresa = {
+        lotes_problematicos: lotesProblematicos,
+        lotes_saudaveis: percentualSaudaveis,
+        reclamacoes_criticas: 0, // reclamacoes futuramente
+        mediana_score_lotes: mediana
+      };
+
+      const dashboardKey = `${empresaNome}/dashboard.json`;
+
+      await s3.send(new PutObjectCommand({
+        Bucket: CLIENT_BUCKET,
+        Key: dashboardKey,
+        Body: JSON.stringify(dashboardEmpresa, null, 2),
+        ContentType: "application/json",
+      }));
+
+      console.log(`Dashboard gerado: ${dashboardKey}`);
+
+      // json por lote
+      for (const lote of lotesEmpresa) {
+
+        const loteKey = `${empresaNome}/${lote.lote}/lote.json`;
+
+        await s3.send(new PutObjectCommand({
+          Bucket: CLIENT_BUCKET,
+          Key: loteKey,
+          Body: JSON.stringify(lote, null, 2),
+          ContentType: "application/json",
+        }));
+
+        console.log(`Arquivo por lote gerado: ${loteKey}`);
+      }
+    }
+
     return { status: "OK" };
 
   } catch (erro) {
     console.error("ERRO NA ETL:", erro);
     throw erro;
+
   } finally {
     if (conn && conn.end) {
       try {
         await conn.end();
       } catch (e) {
-        console.warn("Aviso: erro ao fechar conexão DB", e);
+        console.warn("Aviso ao fechar conexão:", e);
       }
     }
   }
@@ -240,27 +256,37 @@ export const handler = async (event) => {
 // auxiliares
 
 async function listarTodosCSV() {
-  let keys = [];
-  let token = undefined;
+  const arquivos = [];
 
-  do {
-    const resp = await s3.send(
-      new ListObjectsV2Command({
-        Bucket: TRUSTED_BUCKET,
-        Prefix: "trusted/",
-        ContinuationToken: token,
-      })
-    );
+  async function listar(prefixo) {
+    const comando = new ListObjectsV2Command({
+      Bucket: TRUSTED_BUCKET,
+      Prefix: prefixo
+    });
 
-    for (let i = 0; i < (resp.Contents || []).length; i++) {
-      const obj = resp.Contents[i];
-      if (obj.Key.endsWith(".csv")) keys.push(obj.Key);
+    const resposta = await s3.send(comando);
+
+    if (!resposta.Contents) return;
+
+    // adiciona arquivos CSV encontrados
+    for (const obj of resposta.Contents) {
+      if (obj.Key.endsWith(".csv")) {
+        arquivos.push(obj.Key);
+      }
     }
 
-    token = resp.IsTruncated ? resp.NextContinuationToken : undefined;
-  } while (token);
+    // desce mais níveis se houver "pasta" simulada
+    for (const obj of resposta.Contents) {
+      if (obj.Key.endsWith("/")) {
+        await listar(obj.Key);
+      }
+    }
+  }
 
-  return keys;
+  // começa da raiz do bucket
+  await listar("");
+
+  return arquivos;
 }
 
 
