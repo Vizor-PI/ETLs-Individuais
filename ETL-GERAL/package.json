@@ -1,0 +1,10 @@
+{
+  "name": "etl-lambda-unified",
+  "version": "1.0.0",
+  "description": "Lambda unificada para ETL Vizor",
+  "main": "index.mjs",
+  "type": "module",
+  "dependencies": {
+    "mysql2": "^3.9.0"
+  }
+}
