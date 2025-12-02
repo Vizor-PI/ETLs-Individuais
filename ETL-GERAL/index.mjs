@@ -27,10 +27,11 @@ export const handler = async (event) => {
         await Promise.all([
             aquinoToClient(event),
             haniehToClient(event),
-            miguelToClient(event)
+            miguelToClient(event),
+            vitorioToClient(event)
         ]);
 
-        return { statusCode: 200, body: "Processamento completo das 3 rotinas." };
+        return { statusCode: 200, body: "Processamento completo das 4 rotinas." };
 
     } catch (error) {
         console.error("Erro fatal no Handler Principal:", error);
@@ -169,23 +170,44 @@ function determinarMensagemErro(m) {
 }
 
 
-// ____________________HANIEH (Alertas Individuais para Lotes)____________________
+// ____________________HANIEH (Alertas Individuais para Lotes - MODO BATCH)____________________
 
 async function haniehToClient(event) {
   try {
-    const srcBucket = event.Records[0].s3.bucket.name;
-    const srcKey = decodeURIComponent(event.Records[0].s3.object.key.replace(/\+/g, " "));
-    console.log(`[Hanieh] Arquivo recebido: ${srcBucket}/${srcKey}`);
+    // Identifica o bucket de origem a partir do evento (ou usa o padrão se não vier)
+    const srcBucket = event.Records ? event.Records[0].s3.bucket.name : "vizor-trusted";
+    console.log(`[Hanieh] Iniciando processamento BATCH no bucket: ${srcBucket}`);
 
+    // 1. Lista TODOS os arquivos CSV do bucket
+    const csvKeys = await listarTodosCSV(srcBucket);
+    console.log(`[Hanieh] Encontrados ${csvKeys.length} arquivos para processar.`);
+
+    // 2. Processa cada arquivo encontrado
+    for (const key of csvKeys) {
+        await processarArquivoHanieh(srcBucket, key);
+    }
+
+    console.log("[Hanieh] Processamento Batch concluído.");
+
+  } catch (error) {
+    console.error("[Hanieh] Erro Fatal:", error);
+  }
+}
+
+// Função auxiliar que processa UM arquivo (Extraída para ser usada no loop)
+async function processarArquivoHanieh(bucket, key) {
+  try {
     // Baixando o CSV do trusted
     const getCommand = new GetObjectCommand({
-      Bucket: srcBucket,
-      Key: srcKey,
+      Bucket: bucket,
+      Key: key,
     });
     const response = await s3.send(getCommand);
     const csvContent = await response.Body.transformToString();
 
     const lines = csvContent.trim().split('\n');
+    if (lines.length < 2) return; // Arquivo vazio ou só cabeçalho
+
     const header = lines[0].split(',');
     const alerts = [];
 
@@ -239,7 +261,8 @@ async function haniehToClient(event) {
     }
 
     // Salvando o array de alertas no bucket de destino
-    const destKeySufixo = srcKey.replace(/^trusted\//, "alertas/").replace(/\.csv$/, ".json");
+    // Ajuste no replace para remover prefixo 'trusted/' se existir na key original
+    const destKeySufixo = key.replace(/^trusted\//, "alertas/").replace(/\.csv$/, ".json");
     const PASTA_DESTINO = "hanieh-client/";
     const finalKey = PASTA_DESTINO + destKeySufixo;
 
@@ -252,11 +275,10 @@ async function haniehToClient(event) {
 
     await s3.send(putCommand);
 
-    console.log(`[Hanieh] JSON de alertas salvo em: ${DEST_BUCKET}/${finalKey}`);
+    console.log(`[Hanieh] Processado e salvo em: ${DEST_BUCKET}/${finalKey}`);
 
   } catch (error) {
-    console.error("[Hanieh] Erro na ETL JS:", error);
-    // Não lança erro para não parar as outras funções
+    console.error(`[Hanieh] Erro ao processar ${key}:`, error.message);
   }
 }
 
@@ -269,6 +291,9 @@ async function miguelToClient(event) {
  
   const TRUSTED_BUCKET = event.Records[0].s3.bucket.name;
   const CLIENT_BUCKET = DEST_BUCKET; // 
+  
+  // -- AQUI ESTA A PASTA DO MIGUEL --
+  const PASTA_MIGUEL = "miguel-client/"; 
 
   try {
     console.log("[Miguel] Iniciando ETL dos LOTES...");
@@ -451,7 +476,7 @@ async function miguelToClient(event) {
         mediana_score_lotes: mediana
       };
 
-      const dashboardKey = `${empresaNome}/dashboard.json`;
+      const dashboardKey = `${PASTA_MIGUEL}${empresaNome}/dashboard.json`;
 
       await s3.send(new PutObjectCommand({
         Bucket: CLIENT_BUCKET,
@@ -465,7 +490,7 @@ async function miguelToClient(event) {
       // json por lote
       for (const lote of lotesEmpresa) {
 
-        const loteKey = `${empresaNome}/${lote.lote}/lote.json`;
+        const loteKey = `${PASTA_MIGUEL}${empresaNome}/${lote.lote}/lote.json`;
 
         await s3.send(new PutObjectCommand({
           Bucket: CLIENT_BUCKET,
@@ -550,4 +575,141 @@ async function lerCsv(bucketName, key) {
   );
 
   return await streamToString(resp.Body);
+}
+
+
+// ____________________VITORIO (Dashboard Clima - MODO BATCH)____________________
+
+async function vitorioToClient(event) {
+  try {
+    // Identifica o bucket de origem a partir do evento (ou usa o padrão se não vier)
+    const srcBucket = event.Records ? event.Records[0].s3.bucket.name : "vizor-trusted";
+    
+    console.log(`[Vitorio] Iniciando processamento BATCH no bucket: ${srcBucket}`);
+
+    // 1. Lista TODOS os arquivos CSV do bucket
+    const csvKeys = await listarTodosCSV(srcBucket);
+    console.log(`[Vitorio] Encontrados ${csvKeys.length} arquivos para processar.`);
+
+    // 2. Processa cada arquivo encontrado
+    for (const key of csvKeys) {
+        await processarArquivoVitorio(srcBucket, key);
+    }
+
+    console.log("[Vitorio] Processamento Batch concluído.");
+
+  } catch (erro) {
+    console.log("[Vitorio] Erro Fatal:", erro);
+  }
+}
+
+// Função auxiliar que processa UM arquivo (Extraída para ser usada no loop)
+async function processarArquivoVitorio(bucket, key) {
+    try {
+        const getCmd = new GetObjectCommand({
+            Bucket: bucket,
+            Key: key,
+        });
+
+        const resposta = await s3.send(getCmd);
+        const csvTexto = await resposta.Body.transformToString();
+
+        const linhas = csvTexto.trim().split("\n");
+        if (linhas.length < 2) return;
+
+        const brute_split = linhas[0].split(",");
+        const header = [];
+        for (let i = 0; i < brute_split.length; i++) {
+            header.push(brute_split[i].trim().toLowerCase());
+        }
+
+        function acharColuna(nome) {
+            for (let i = 0; i < header.length; i++) {
+                if (header[i] === nome.toLowerCase()) return i;
+            }
+            return -1;
+        }
+
+        let idxTime = acharColuna("time");
+        if (idxTime === -1) idxTime = acharColuna("timestamp");
+        if (idxTime === -1) idxTime = acharColuna("data");
+
+        const idxCpu = acharColuna("cpu");
+        const idxRam = acharColuna("memoria") !== -1 ? acharColuna("memoria") : acharColuna("mem");
+        const idxDisco = acharColuna("disco");
+        const idxUptime = acharColuna("uptime");
+        const idxTemp = acharColuna("temperatura") !== -1 ? acharColuna("temperatura") : acharColuna("temp");
+        const idxSituacao = acharColuna("situacao");
+        const idxIndoor = acharColuna("indoor");
+        
+        let idxLat = acharColuna("lat");
+        if (idxLat === -1) idxLat = acharColuna("latitude");
+
+        let idxLong = acharColuna("long");
+        if (idxLong === -1) idxLong = acharColuna("longitude");
+        if (idxLong === -1) idxLong = acharColuna("lng");
+
+        if (idxCpu === -1 || idxRam === -1 || idxDisco === -1) return;
+
+        const ultima = linhas[linhas.length - 1].split(",");
+
+        function limparNumero(v) {
+            if (!v) return 0;
+            const s = String(v).replace(",", ".").trim();
+            return parseFloat(s);
+        }
+
+        // Extrai empresa e maquina do caminho (Ex: trusted/EmpresaX/MaquinaY/...)
+        // Remove "trusted/" se existir para pegar os indices certos
+        const cleanKey = key.replace(/^trusted\//, ""); 
+        const partes = cleanKey.split("/");
+        
+        // Ajuste robusto: Se o path for "Empresa/Maquina/...", partes[0] é empresa.
+        const empresa = partes[0];
+        const maquina = partes[1];
+
+        const metrics = {
+            cpu: limparNumero(ultima[idxCpu]),
+            ram: limparNumero(ultima[idxRam]),
+            disco: limparNumero(ultima[idxDisco]),
+            temp: limparNumero(ultima[idxTemp]),
+            uptime: idxUptime !== -1 ? ultima[idxUptime] : "",
+            timestamp: idxTime !== -1 ? ultima[idxTime] : "",
+            indoor: idxIndoor !== -1 ? ultima[idxIndoor] : "N/A",
+            situacao: idxSituacao !== -1 ? ultima[idxSituacao] : "Desconhecido",
+            latitude: idxLat !== -1 ? limparNumero(ultima[idxLat]) : null,
+            longitude: idxLong !== -1 ? limparNumero(ultima[idxLong]) : null,
+        };
+
+        const jsonFinal = {
+            machine_id: maquina,
+            company: empresa,
+            last_update: metrics.timestamp,
+            raw_metrics: {
+                cpu: metrics.cpu + "%",
+                ram: metrics.ram + "%",
+                disco: metrics.disco + "%",
+                temp: metrics.temp + "°C",
+                indoor: metrics.indoor,
+                latitude: metrics.latitude,
+                longitude: metrics.longitude,
+            },
+            situacao: metrics.situacao,
+        };
+
+        const destino = "clima-dash/" + empresa + "/" + maquina + ".json";
+
+        const putCmd = new PutObjectCommand({
+            Bucket: DEST_BUCKET,
+            Key: destino,
+            Body: JSON.stringify(jsonFinal, null, 2),
+            ContentType: "application/json",
+        });
+
+        await s3.send(putCmd);
+        console.log(`[Vitorio] Processado: ${destino}`);
+
+    } catch (e) {
+        console.warn(`[Vitorio] Erro ao processar ${key}: ${e.message}`);
+    }
 }
