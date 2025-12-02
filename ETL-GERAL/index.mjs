@@ -1,8 +1,16 @@
 import { S3Client, GetObjectCommand, PutObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
 import mysql from "mysql2/promise";
 
+// Import para chamar a Lambda Python do Pedro
+import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda"; 
+
 // Inicializa o s3 
 const s3 = new S3Client({ region: "us-east-1" });
+
+
+// Inicializando o cliente Lambda
+const lambdaClient = new LambdaClient({ region: "us-east-1" });
+
 
 // Configurações Globais
 const DEST_BUCKET = "vizor-client";
@@ -582,18 +590,41 @@ async function lerCsv(bucketName, key) {
 
 async function vitorioToClient(event) {
   try {
-    // Identifica o bucket de origem a partir do evento (ou usa o padrão se não vier)
     const srcBucket = event.Records ? event.Records[0].s3.bucket.name : "vizor-trusted";
-    
     console.log(`[Vitorio] Iniciando processamento BATCH no bucket: ${srcBucket}`);
 
-    // 1. Lista TODOS os arquivos CSV do bucket
+    // 1. Listar TODOS os arquivos no bucket
     const csvKeys = await listarTodosCSV(srcBucket);
     console.log(`[Vitorio] Encontrados ${csvKeys.length} arquivos para processar.`);
 
-    // 2. Processa cada arquivo encontrado
+    // 2. Loop principal: Para cada arquivo, processa localmente E chama o Python
     for (const key of csvKeys) {
+        
+        // A) Processamento Local (Vitório)
         await processarArquivoVitorio(srcBucket, key);
+
+        // B) Invocação Remota (Pedro - Python)
+        // [ALTERAÇÃO IMPORTANTE] A invocação agora está dentro do loop!
+        // Criamos um "evento falso" específico para este arquivo único
+        const eventFake = {
+            Records: [{
+                s3: {
+                    bucket: { name: srcBucket },
+                    object: { key: key } // Aqui passamos o arquivo da vez (COD001, COD002...)
+                }
+            }]
+        };
+
+        try {
+            await lambdaClient.send(new InvokeCommand({
+              FunctionName: "vizor-lambda-python", 
+              InvocationType: "Event", // Dispara e esquece (assíncrono)
+              Payload: JSON.stringify(eventFake)
+            }));
+            console.log(`[Pedro] Invocado para: ${key}`);
+        } catch (invErr) {
+            console.error(`[Pedro] Erro ao invocar para ${key}:`, invErr);
+        }
     }
 
     console.log("[Vitorio] Processamento Batch concluído.");
