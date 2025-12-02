@@ -1,16 +1,14 @@
 import { S3Client, GetObjectCommand, PutObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
 import mysql from "mysql2/promise";
 
-// Inicializa o s3 (Configuração baseada no Codigo 1)
+// Inicializa o s3 
 const s3 = new S3Client({ region: "us-east-1" });
 
 // Configurações Globais
 const DEST_BUCKET = "vizor-client";
-// Para o codigo do Miguel que precisa varrer o bucket de origem
-// Vamos pegar dinamicamente do evento ou usar variavel de ambiente se preferir, 
-// mas aqui vou deixar preparado para ler do evento.
 
-// Configuração banco de dados (Necessário para o Codigo 3 - Miguel)
+
+// Configuração banco de dados (Miguel)
 const dbConfig = {
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
@@ -18,9 +16,8 @@ const dbConfig = {
   database: process.env.DB_NAME,
 };
 
-// ==========================================
-// HANDLER PRINCIPAL (Orquestrador)
-// ==========================================
+
+// HANDLER PRINCIPAL 
 export const handler = async (event) => {
     console.log("Iniciando processamento unificado...");
 
@@ -41,9 +38,9 @@ export const handler = async (event) => {
     }
 };
 
-// ==========================================
-// FUNÇÃO 1: AQUINO (Dashboard UI)
-// ==========================================
+
+// ____________________AQUINO (Dashboard Incidentes)____________________
+
 async function aquinoToClient(event) {
   try {
     const srcBucket = event.Records[0].s3.bucket.name;
@@ -162,7 +159,7 @@ async function aquinoToClient(event) {
   }
 }
 
-// Função auxiliar do Aquino
+// Função auxiliar - Aquino
 function determinarMensagemErro(m) {
   if (m.cpu > 80) return "Uso de processador extremamente alto.";
   if (m.ram > 80) return "Memória RAM no limite.";
@@ -171,9 +168,9 @@ function determinarMensagemErro(m) {
   return "Hardware com valores elevados.";
 }
 
-// ==========================================
-// FUNÇÃO 2: HANIEH (Alertas Individuais)
-// ==========================================
+
+// ____________________HANIEH (Alertas Individuais para Lotes)____________________
+
 async function haniehToClient(event) {
   try {
     const srcBucket = event.Records[0].s3.bucket.name;
@@ -263,15 +260,15 @@ async function haniehToClient(event) {
   }
 }
 
-// ==========================================
-// FUNÇÃO 3: MIGUEL (Batch Processing & KPIs)
-// ==========================================
+
+// ____________________MIGUEL____________________
+
 async function miguelToClient(event) {
   let conn;
 
-  // Precisamos definir o bucket trusted aqui baseado no evento para compatibilidade
+ 
   const TRUSTED_BUCKET = event.Records[0].s3.bucket.name;
-  const CLIENT_BUCKET = DEST_BUCKET; // Usando a constante global ou process.env
+  const CLIENT_BUCKET = DEST_BUCKET; // 
 
   try {
     console.log("[Miguel] Iniciando ETL dos LOTES...");
@@ -303,7 +300,6 @@ async function miguelToClient(event) {
     console.log("[Miguel] Players mapeados:", Object.keys(players).length);
 
     // listando CSVs
-    // Nota: Passamos o TRUSTED_BUCKET explicitamente para a função auxiliar
     const csvKeys = await listarTodosCSV(TRUSTED_BUCKET);
     console.log("[Miguel] CSV encontrados:", csvKeys.length);
 
@@ -497,9 +493,9 @@ async function miguelToClient(event) {
   }
 }
 
-// ==========================================
-// FUNÇÕES AUXILIARES (Miguel)
-// ==========================================
+
+// FUNÇÕES AUXILIARES - Miguel
+
 
 // transforma stream em string
 const streamToString = (stream) =>
@@ -530,11 +526,7 @@ async function listarTodosCSV(bucketName) {
       }
     }
 
-    // desce mais níveis se houver "pasta" simulada
-    // Nota: Em ListObjectsV2, "CommonPrefixes" é usado se houver Delimiter.
-    // Como aqui não estamos usando Delimiter, ele já lista tudo recursivamente por padrão.
-    // Mantive a logica do codigo original se ele estivesse usando delimiter, 
-    // mas se for recursivo puro, o listObjectsV2 com loop de 'IsTruncated' seria o ideal.
+
     // Mantendo logica original:
     if (resposta.CommonPrefixes) {
         for (const obj of resposta.CommonPrefixes) {
